@@ -1,6 +1,7 @@
 import streamlit as st
 import difflib
 import random
+import re
 
 # 페이지 기본 설정
 st.set_page_config(
@@ -12,6 +13,10 @@ st.set_page_config(
 # 세션 상태 초기화
 if "verses" not in st.session_state:
     st.session_state.verses = []
+
+# 교리 요약 세션
+if "doctrines" not in st.session_state:
+    st.session_state.doctrines = []  # [{'question': ..., 'answer': ...}, ...]
 
 # 암송 테스트 세션
 if "quiz_active" not in st.session_state:
@@ -28,6 +33,12 @@ if "random_order" not in st.session_state:
     st.session_state.random_order = []
 if "random_current_index" not in st.session_state:
     st.session_state.random_current_index = 0
+
+# 교리 테스트 세션
+if "doctrine_quiz_active" not in st.session_state:
+    st.session_state.doctrine_quiz_active = False
+if "doctrine_current_index" not in st.session_state:
+    st.session_state.doctrine_current_index = 0
 
 # 입력 및 결과 공통 세션
 if "last_submitted_text" not in st.session_state:
@@ -70,7 +81,7 @@ def diff_html(user_str, target_str):
 st.title("📖 말씀 암송 도우미")
 
 # 탭 구성
-tab1, tab2, tab3 = st.tabs(["📝 말씀 저장", "🧠 암송 테스트", "🎲 랜덤 테스트"])
+tab1, tab2, tab3, tab4 = st.tabs(["📝 말씀 저장", "🧠 암송 테스트", "🎲 랜덤 테스트", "📚 교리 요약"])
 
 # ==========================================
 # TAB 1: 말씀 저장
@@ -246,7 +257,7 @@ with tab2:
                 st.rerun()
 
 # ==========================================
-# TAB 3: 랜덤 암송 테스트 (주소 제외 채점 적용)
+# TAB 3: 랜덤 암송 테스트
 # ==========================================
 with tab3:
     st.header("🎲 랜덤 암송 테스트")
@@ -256,7 +267,6 @@ with tab3:
     else:
         total_count = len(st.session_state.verses)
 
-        # 시작 안내 화면
         if not st.session_state.random_quiz_active:
             st.subheader("전체 말씀 랜덤 암송")
             st.write(f"현재 저장된 총 **{total_count}개**의 말씀을 랜덤 순서로 테스트합니다.")
@@ -273,7 +283,6 @@ with tab3:
                 st.session_state.random_quiz_active = True
                 st.rerun()
 
-        # 테스트 진행 화면
         else:
             current_verse_pos = st.session_state.random_order[st.session_state.random_current_index]
             target_verse = st.session_state.verses[current_verse_pos]
@@ -283,25 +292,20 @@ with tab3:
             st.subheader(f"진행 상황: ({current_step} / {total_steps})")
             st.progress(current_step / total_steps)
 
-            # 어절 분할 (공백 기준)
             words = target_verse.split()
 
-            # 본문과 주소(마지막 3어절) 분리
             if len(words) >= 4:
                 first_word = words[0]
-                target_body_words = " ".join(words[:-3])  # 마지막 3어절을 제외한 본문
-                address_words = " ".join(words[-3:])  # 마지막 3어절 (주소)
+                target_body_words = " ".join(words[:-3])
+                address_words = " ".join(words[-3:])
             else:
                 first_word = words[0] if words else ""
                 target_body_words = target_verse
                 address_words = "주소 미상"
 
-            # 주소 힌트 카드로 표시
             st.info(f"📍 **주소 힌트:** {address_words}")
 
             input_key = f"input_tab3_{st.session_state.random_current_index}_{st.session_state.get('reset_count_tab3', 0)}"
-
-            # 입력창 (기본값으로 첫 번째 어절 채워주기)
             user_input = st.text_area(
                 "기억나는 말씀 본문을 이어 써주세요 (주소 제외):",
                 value=f"{first_word} ",
@@ -327,7 +331,6 @@ with tab3:
                     st.session_state.reset_count_tab3 = st.session_state.get("reset_count_tab3", 0) + 1
                     st.rerun()
 
-            # 결과 비교 영역 (본문끼리만 비교)
             if st.session_state.submitted:
                 st.divider()
                 submitted_text = st.session_state.last_submitted_text
@@ -370,6 +373,159 @@ with tab3:
             st.divider()
             if st.button("테스트 종료", key="btn_exit_tab3"):
                 st.session_state.random_quiz_active = False
+                st.session_state.last_submitted_text = ""
+                st.session_state.submitted = False
+                st.rerun()
+
+# ==========================================
+# TAB 4: 교리 요약 (저장 시 '정답:' 자동 제거)
+# ==========================================
+with tab4:
+    st.header("📚 교리 요약 저장 및 테스트")
+
+    st.subheader("1. 교리 문제 및 정답 입력")
+    st.caption("💡 각 덩어리(엔터 두 번)의 **첫번째 줄은 문제**, **두번째 줄은 정답**으로 저장됩니다.")
+    st.caption("✨ 정답 입력 시 앞에 붙은 '정답:' 부분은 자동으로 제거된 후 저장됩니다.")
+
+    doctrine_raw_input = st.text_area(
+        "교리 문제와 정답을 입력하세요:",
+        placeholder=(
+            "1. 성경은 무엇인가요?\n정답: 성경은 하나님의 영감으로 기록된 말씀입니다.\n\n"
+            "2. 하나님은 어떤 분이신가요?\n정답: 하나님은 만물을 창조하신 유일한 창조주이십니다."
+        ),
+        height=200,
+        key="doctrine_input_area"
+    )
+
+    if st.button("교리 저장", type="primary", key="btn_save_doctrine"):
+        if doctrine_raw_input.strip():
+            chunks = [chunk.strip() for chunk in doctrine_raw_input.split("\n\n") if chunk.strip()]
+            new_doctrines = []
+
+            for chunk in chunks:
+                lines = [line.strip() for line in chunk.split("\n") if line.strip()]
+                if len(lines) >= 2:
+                    q_text = lines[0]
+                    raw_a_text = "\n".join(lines[1:])
+                    # 저장 시 '정답:', '정답 :', '정답 -' 등의 무의미한 접두어 자동 제거
+                    clean_a_text = re.sub(r'^(정답\s*[:\.-]?\s*)', '', raw_a_text).strip()
+                    new_doctrines.append({"question": q_text, "answer": clean_a_text})
+                elif len(lines) == 1:
+                    new_doctrines.append({"question": lines[0], "answer": ""})
+
+            st.session_state.doctrines.extend(new_doctrines)
+            st.success(f"총 {len(new_doctrines)}개의 교리 문제가 새로 저장되었습니다!")
+            st.rerun()
+        else:
+            st.warning("저장할 교리 내용을 입력해주세요.")
+
+    st.divider()
+
+    st.subheader("📋 현재 저장된 교리 목록")
+    if not st.session_state.doctrines:
+        st.info("아직 저장된 교리가 없습니다.")
+    else:
+        st.write(f"총 **{len(st.session_state.doctrines)}개**의 교리 문제가 저장되어 있습니다.")
+        for idx, doc in enumerate(st.session_state.doctrines, start=1):
+            with st.expander(f"문제 {idx}: {doc['question']}"):
+                st.write(f"**정답:** {doc['answer']}")
+
+        if st.button("전체 교리 삭제", key="btn_clear_doctrines"):
+            st.session_state.doctrines = []
+            st.rerun()
+
+    st.divider()
+
+    st.subheader("2. 교리 테스트 진행")
+    if not st.session_state.doctrines:
+        st.info("저장된 교리 문제가 있어야 테스트를 시작할 수 있습니다.")
+    else:
+        if not st.session_state.doctrine_quiz_active:
+            if st.button("🚀 교리 테스트 시작", type="primary", key="btn_start_doctrine_test"):
+                st.session_state.doctrine_current_index = 0
+                st.session_state.last_submitted_text = ""
+                st.session_state.submitted = False
+                st.session_state.doctrine_quiz_active = True
+                st.rerun()
+        else:
+            current_doc = st.session_state.doctrines[st.session_state.doctrine_current_index]
+            current_step = st.session_state.doctrine_current_index + 1
+            total_steps = len(st.session_state.doctrines)
+
+            st.subheader(f"진행 상황: ({current_step} / {total_steps})")
+            st.progress(current_step / total_steps)
+
+            st.markdown(f"#### ❓ 문제: {current_doc['question']}")
+
+            target_check_answer = current_doc['answer']
+
+            input_key = f"input_tab4_{st.session_state.doctrine_current_index}_{st.session_state.get('reset_count_tab4', 0)}"
+            user_input = st.text_area(
+                "정답을 입력하세요:",
+                height=150,
+                key=input_key
+            )
+
+            col_check, col_retry = st.columns([1, 1])
+            with col_check:
+                if st.button("확인", type="primary", use_container_width=True, key="btn_check_tab4"):
+                    if user_input.strip():
+                        st.session_state.last_submitted_text = user_input
+                        st.session_state.submitted = True
+                        st.session_state.reset_count_tab4 = st.session_state.get("reset_count_tab4", 0) + 1
+                        st.rerun()
+                    else:
+                        st.warning("정답을 입력해 주세요.")
+
+            with col_retry:
+                if st.button("🔄 다시 시도", use_container_width=True, key="btn_retry_tab4"):
+                    st.session_state.last_submitted_text = ""
+                    st.session_state.submitted = False
+                    st.session_state.reset_count_tab4 = st.session_state.get("reset_count_tab4", 0) + 1
+                    st.rerun()
+
+            if st.session_state.submitted:
+                st.divider()
+                submitted_text = st.session_state.last_submitted_text
+
+                clean_target = target_check_answer.replace(" ", "").replace("\n", "")
+                clean_user = submitted_text.replace(" ", "").replace("\n", "")
+
+                if clean_target == clean_user:
+                    st.success("🎉 정답입니다! 참 잘하셨습니다.")
+                else:
+                    st.error("❌ 틀린 부분이 있습니다. 아래에서 비교해 보세요.")
+
+                st.markdown("### ✍️ 내가 입력한 정답 (비교 교정)")
+                formatted_diff = diff_html(submitted_text, target_check_answer)
+                st.markdown(
+                    f"<div style='background-color: #f8f9fa; padding: 15px; border-radius: 8px; font-size: 1.1em; line-height: 2.2;'>{formatted_diff}</div>",
+                    unsafe_allow_html=True
+                )
+
+                st.markdown("### 📖 정답 (기준)")
+                st.info(target_check_answer)
+                st.divider()
+
+                if st.session_state.doctrine_current_index + 1 < total_steps:
+                    if st.button("다음 문제로 ➡️", type="primary", key="btn_next_tab4"):
+                        st.session_state.doctrine_current_index += 1
+                        st.session_state.last_submitted_text = ""
+                        st.session_state.submitted = False
+                        st.session_state.reset_count_tab4 = st.session_state.get("reset_count_tab4", 0) + 1
+                        st.rerun()
+                else:
+                    st.balloons()
+                    st.success("✨ 저장된 모든 교리 테스트를 완료하셨습니다!")
+                    if st.button("처음으로 돌아가기", key="btn_finish_tab4"):
+                        st.session_state.doctrine_quiz_active = False
+                        st.session_state.last_submitted_text = ""
+                        st.session_state.submitted = False
+                        st.rerun()
+
+            st.divider()
+            if st.button("테스트 종료", key="btn_exit_tab4"):
+                st.session_state.doctrine_quiz_active = False
                 st.session_state.last_submitted_text = ""
                 st.session_state.submitted = False
                 st.rerun()
